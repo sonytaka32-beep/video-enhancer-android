@@ -19,18 +19,25 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Configure Verified Maven Central FFmpeg-Kit
+      - name: Configure Repositories & FFmpeg-Kit Mirror
         run: |
           # 1. Hapus file .gradle lama jika versi .gradle.kts sudah ada agar tidak bentrok
           [ -f settings.gradle ] && [ -f settings.gradle.kts ] && rm -f settings.gradle
           [ -f build.gradle ] && [ -f build.gradle.kts ] && rm -f build.gradle
           [ -f app/build.gradle ] && [ -f app/build.gradle.kts ] && rm -f app/build.gradle
 
-          # 2. Hapus JitPack dari settings.gradle(.kts) agar tidak memicu error 401
+          # 2. Hapus JitPack agar tidak memicu error 401
           find . -maxdepth 2 \( -name "settings.gradle" -o -name "settings.gradle.kts" \) -exec \
             sed -i '/jitpack\.io/d' {} +
 
-          # 3. Ganti koordinat lama arthenica dengan mirror Maven Central yang sudah terverifikasi
+          # 3. Tambahkan mirror Google Maven Central sebelum mavenCentral() untuk mencegah rate-limit
+          if [ -f settings.gradle.kts ] && ! grep -q "storage-download.googleapis.com" settings.gradle.kts; then
+            sed -i 's|mavenCentral()|maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }\n        mavenCentral()|g' settings.gradle.kts
+          elif [ -f settings.gradle ] && ! grep -q "storage-download.googleapis.com" settings.gradle; then
+            sed -i "s|mavenCentral()|maven { url 'https://maven-central.storage-download.googleapis.com/maven2/' }\n        mavenCentral()|g" settings.gradle
+          fi
+
+          # 4. Pastikan dependency ffmpeg-kit memakai mirror Maven Central yang aktif
           FFMPEG_DEP="com.moizhassan.ffmpeg:ffmpeg-kit-16kb:6.0.0"
           find . -maxdepth 3 \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec \
             sed -i -E "s#(com\.github\.arthenica|com\.arthenica):ffmpeg-kit-[^\"']+#${FFMPEG_DEP}#g" {} +
@@ -41,7 +48,7 @@ jobs:
           gradle-version: '8.7'
 
       - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: gradle assembleDebug --refresh-dependencies --no-daemon --stacktrace
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
