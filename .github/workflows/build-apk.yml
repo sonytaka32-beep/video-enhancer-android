@@ -19,6 +19,24 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      - name: Fix Gradle & FFmpeg-Kit Repository
+        run: |
+          # 1. Hapus file .gradle lama jika versi .gradle.kts sudah ada agar tidak bentrok
+          [ -f settings.gradle ] && [ -f settings.gradle.kts ] && rm -f settings.gradle
+          [ -f build.gradle ] && [ -f build.gradle.kts ] && rm -f build.gradle
+          [ -f app/build.gradle ] && [ -f app/build.gradle.kts ] && rm -f app/build.gradle
+
+          # 2. Pastikan JitPack terdaftar di settings.gradle(.kts)
+          if [ -f settings.gradle.kts ] && ! grep -q "jitpack.io" settings.gradle.kts; then
+            sed -i 's|mavenCentral()|mavenCentral()\n        maven { url = uri("https://jitpack.io") }|g' settings.gradle.kts
+          elif [ -f settings.gradle ] && ! grep -q "jitpack.io" settings.gradle; then
+            sed -i "s|mavenCentral()|mavenCentral()\n        maven { url 'https://jitpack.io' }|g" settings.gradle
+          fi
+
+          # 3. Ganti koordinat lama com.arthenica:ffmpeg-kit-full:5.1 di semua file Gradle
+          find . -maxdepth 3 \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec \
+            sed -i 's|com.arthenica:ffmpeg-kit-full:5.1|com.github.arthenica:ffmpeg-kit-full-gpl:v5.1.LTS|g' {} +
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
