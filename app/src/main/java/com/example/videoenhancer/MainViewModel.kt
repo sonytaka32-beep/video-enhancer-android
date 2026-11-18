@@ -7,6 +7,7 @@ import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.arthenica.ffmpegkit.FFmpegKitConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,6 +20,7 @@ data class VideoQueueItem(
     val id: String,
     val uri: Uri,
     val name: String,
+    val originalSizeBytes: Long,
     val originalSizeMb: Double,
     val status: String = "Ready",
     val errorDetail: String? = null,
@@ -32,7 +34,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val enhancer = VideoEnhancer()
     private var activeJob: Job? = null
 
-    private val _selectedPreset = MutableStateFlow(EnhancementPreset.CRISP_1080P_ANTI_BLOAT)
+    private val _selectedPreset = MutableStateFlow(EnhancementPreset.TURBO_HARDWARE_1080P)
     val selectedPreset = _selectedPreset.asStateFlow()
 
     private val _strictSizeLock = MutableStateFlow(true)
@@ -76,6 +78,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 id = "${uri}_${System.nanoTime()}",
                 uri = uri,
                 name = name,
+                originalSizeBytes = sizeBytes,
                 originalSizeMb = sizeBytes / (1024.0 * 1024.0),
                 status = "Ready"
             )
@@ -91,7 +94,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_isProcessing.value) return
         val hasReady = _queue.value.any { it.status == "Ready" }
         if (!hasReady) {
-            // Jika semua item berstatus Failed/Cancelled, reset jadi Ready agar bisa langsung diulang
             _queue.update { list ->
                 list.map {
                     if (it.status == "Failed" || it.status == "Cancelled") {
@@ -112,16 +114,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(status = "Enhancing", errorDetail = null, progress = 0f)
                 }
 
-                val tempInput = File(context.cacheDir, "in_${System.currentTimeMillis()}.mp4")
                 val tempOutput = File(context.cacheDir, "out_1080p_${System.currentTimeMillis()}.mp4")
+                var tempInputFallback: File? = null
 
                 try {
-                    context.contentResolver.openInputStream(nextItem.uri)?.use { input ->
-                        tempInput.outputStream().use { output -> input.copyTo(output) }
+                    // Baca langsung lewat SAF FD tanpa menyalin 362MB ke cache
+                    val safInputPath = FFmpegKitConfig.getSafParameterForRead(context, nextItem.uri)
+                    val resolvedInputPath = if (!safInputPath.isNullOrBlank()) {
+                        safInputPath
+                    } else {
+                        File(context.cacheDir, "in_${System.currentTimeMillis()}.mp4").also { file ->
+                            tempInputFallback = file
+                            context.contentResolver.openInputStream(nextItem.uri)?.use { input ->
+                                file.outputStream().use { output -> input.copyTo(output) }
+                            }
+                        }.absolutePath
                     }
 
                     val result = enhancer.enhanceVideo(
-                        inputPath = tempInput.absolutePath,
+                        inputPath = resolvedInputPath,
+                        originalSizeBytes = nextItem.originalSizeBytes,
                         outputPath = tempOutput.absolutePath,
                         preset = _selectedPreset.value,
                         strictSizeLock = _strictSizeLock.value
@@ -153,7 +165,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(status = "Failed", errorDetail = e.message)
                     }
                 } finally {
-                    tempInput.delete()
+                    tempInputFallback?.delete()
                     tempOutput.delete()
                 }
             }
@@ -174,7 +186,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return
             }
         }
-        // Fallback otomatis ke folder Movies/VideoEnhancer jika folder output belum dipilih
         val moviesDir = File(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
             "VideoEnhancer"
