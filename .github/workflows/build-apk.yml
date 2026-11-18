@@ -30,28 +30,10 @@ jobs:
           find . -maxdepth 2 \( -name "settings.gradle" -o -name "settings.gradle.kts" \) -exec \
             sed -i '/jitpack\.io/d' {} +
 
-          # 3. Pilih mirror ffmpeg-kit di Maven Central yang aktif (HTTP 200)
-          FFMPEG_DEP=""
-          for CANDIDATE in \
-            "com.moizhassan.ffmpeg:ffmpeg-kit-16kb:6.0.0|https://repo1.maven.org/maven2/com/moizhassan/ffmpeg/ffmpeg-kit-16kb/6.0.0/ffmpeg-kit-16kb-6.0.0.aar" \
-            "com.antonkarpenko:ffmpeg-kit-full-gpl:1.1.0|https://repo1.maven.org/maven2/com/antonkarpenko/ffmpeg-kit-full-gpl/1.1.0/ffmpeg-kit-full-gpl-1.1.0.aar" \
-            "io.github.shenzhen2017:ffmpeg-kit-full-gpl:5.1.LTS|https://repo1.maven.org/maven2/io/github/shenzhen2017/ffmpeg-kit-full-gpl/5.1.LTS/ffmpeg-kit-full-gpl-5.1.LTS.aar"
-          do
-            COORD="${CANDIDATE%%|*}"
-            URL="${CANDIDATE##*|}"
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -L "$URL")
-            if [ "$STATUS" = "200" ]; then
-              FFMPEG_DEP="$COORD"
-              echo "Menggunakan FFmpeg-Kit Maven Central: $FFMPEG_DEP"
-              break
-            fi
-          done
-
-          # 4. Ganti koordinat lama dengan dependency Maven Central yang terverifikasi
-          if [ -n "$FFMPEG_DEP" ]; then
-            find . -maxdepth 3 \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec \
-              sed -i -E "s|(com\.github\.arthenica:ffmpeg-kit-full-gpl:v5\.1\.LTS|com\.arthenica:ffmpeg-kit-full:5\.1)|$FFMPEG_DEP|g" {} +
-          fi
+          # 3. Ganti koordinat lama arthenica dengan mirror Maven Central yang sudah terverifikasi
+          FFMPEG_DEP="com.moizhassan.ffmpeg:ffmpeg-kit-16kb:6.0.0"
+          find . -maxdepth 3 \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec \
+            sed -i -E "s#(com\.github\.arthenica|com\.arthenica):ffmpeg-kit-[^\"']+#${FFMPEG_DEP}#g" {} +
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
