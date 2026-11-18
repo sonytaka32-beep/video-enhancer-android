@@ -1,6 +1,5 @@
 package com.example.videoenhancer
 
-import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -38,6 +37,7 @@ fun EnhancerScreen(vm: MainViewModel = viewModel()) {
     val strictLock by vm.strictSizeLock.collectAsState()
     val outputDir by vm.outputDirUri.collectAsState()
     val queue by vm.queue.collectAsState()
+    val isProcessing by vm.isProcessing.collectAsState()
     var dropdownExpanded by remember { mutableStateOf(false) }
 
     val videoPicker = rememberLauncherForActivityResult(
@@ -120,12 +120,22 @@ fun EnhancerScreen(vm: MainViewModel = viewModel()) {
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        Button(
-            onClick = { vm.cancelAll() },
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Cancel Entire Queue", color = MaterialTheme.colorScheme.onSecondaryContainer)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = { vm.startEnhance() },
+                enabled = !isProcessing && queue.isNotEmpty(),
+                modifier = Modifier.weight(1.3f)
+            ) {
+                Text(if (isProcessing) "Processing..." else "▶ Start Enhance")
+            }
+
+            OutlinedButton(
+                onClick = { vm.cancelAll() },
+                enabled = isProcessing,
+                modifier = Modifier.weight(0.7f)
+            ) {
+                Text("Cancel")
+            }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -134,7 +144,27 @@ fun EnhancerScreen(vm: MainViewModel = viewModel()) {
             items(queue, key = { it.id }) { item ->
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        Text(item.name, style = MaterialTheme.typography.titleMedium)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = item.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (item.status != "Enhancing") {
+                                TextButton(
+                                    onClick = { vm.removeItem(item.id) },
+                                    contentPadding = PaddingValues(0.dp),
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Text("✕", fontSize = 14.sp)
+                                }
+                            }
+                        }
+
                         val sizeText = if (item.outputSizeMb != null) {
                             String.format("Original: %.1f MB -> Enhanced 1080p: %.1f MB", item.originalSizeMb, item.outputSizeMb)
                         } else {
@@ -145,6 +175,13 @@ fun EnhancerScreen(vm: MainViewModel = viewModel()) {
                             "Status: ${item.status} (${(item.progress * 100).toInt()}%) • Elapsed ${formatSec(item.elapsedSec)} • ETA ${formatSec(item.etaSec)}",
                             fontSize = 12.sp
                         )
+                        if (!item.errorDetail.isNullOrBlank()) {
+                            Text(
+                                text = "Log: ${item.errorDetail}",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
                         Spacer(modifier = Modifier.height(6.dp))
                         LinearProgressIndicator(
                             progress = { item.progress },

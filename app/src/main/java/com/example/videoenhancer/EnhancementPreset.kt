@@ -2,14 +2,15 @@ package com.example.videoenhancer
 
 enum class EnhancementPreset(
     val displayName: String,
-    val bitrateMultiplier: Double, // Pengali dari bitrate asli agar size tidak bengkak
+    val bitrateMultiplier: Double,
     val minBitrateKbps: Int,
     val maxBitrateKbps: Int,
+    val isHardwareCodec: Boolean = false,
     val ffmpegArgs: List<String>
 ) {
     CRISP_1080P_ANTI_BLOAT(
         displayName = "1080p Crisp Upscale (Anti-Bloat Size)",
-        bitrateMultiplier = 1.05, // Menjaga ukuran hampir sama dengan file asli
+        bitrateMultiplier = 1.05,
         minBitrateKbps = 650,
         maxBitrateKbps = 1800,
         ffmpegArgs = listOf(
@@ -27,7 +28,7 @@ enum class EnhancementPreset(
 
     ULTRA_SHARP_HEVC_1080P(
         displayName = "1080p Ultra Sharp HEVC (Size Lebih Kecil)",
-        bitrateMultiplier = 0.85, // Codec H.265 sanggup membuat 1080p lebih kecil dari 360p asli!
+        bitrateMultiplier = 0.85,
         minBitrateKbps = 500,
         maxBitrateKbps = 1400,
         ffmpegArgs = listOf(
@@ -66,10 +67,11 @@ enum class EnhancementPreset(
         bitrateMultiplier = 1.15,
         minBitrateKbps = 800,
         maxBitrateKbps = 2200,
+        isHardwareCodec = true,
         ffmpegArgs = listOf(
             "-vf", "scale=-2:1080:flags=bicubic,unsharp=5:5:1.0:5:5:0.0",
             "-c:v", "h264_mediacodec",
-            "-pix_fmt", "yuv420p",
+            "-pix_fmt", "nv12",
             "-c:a", "copy",
             "-movflags", "+faststart"
         )

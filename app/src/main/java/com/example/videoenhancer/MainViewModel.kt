@@ -2,6 +2,7 @@ package com.example.videoenhancer
 
 import android.app.Application
 import android.net.Uri
+import android.os.Environment
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
@@ -19,7 +20,8 @@ data class VideoQueueItem(
     val uri: Uri,
     val name: String,
     val originalSizeMb: Double,
-    val status: String = "Queued",
+    val status: String = "Ready",
+    val errorDetail: String? = null,
     val progress: Float = 0f,
     val elapsedSec: Long = 0L,
     val etaSec: Long = 0L,
@@ -71,24 +73,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             VideoQueueItem(
-                id = "${uri}_${System.currentTimeMillis()}",
+                id = "${uri}_${System.nanoTime()}",
                 uri = uri,
                 name = name,
-                originalSizeMb = sizeBytes / (1024.0 * 1024.0)
+                originalSizeMb = sizeBytes / (1024.0 * 1024.0),
+                status = "Ready"
             )
         }
         _queue.update { it + newItems }
-        if (!_isProcessing.value) startQueue()
     }
 
-    private fun startQueue() {
+    fun removeItem(id: String) {
+        _queue.update { list -> list.filterNot { it.id == id && it.status != "Enhancing" } }
+    }
+
+    fun startEnhance() {
+        if (_isProcessing.value) return
+        val hasReady = _queue.value.any { it.status == "Ready" }
+        if (!hasReady) {
+            // Jika semua item berstatus Failed/Cancelled, reset jadi Ready agar bisa langsung diulang
+            _queue.update { list ->
+                list.map {
+                    if (it.status == "Failed" || it.status == "Cancelled") {
+                        it.copy(status = "Ready", errorDetail = null, progress = 0f, elapsedSec = 0L, etaSec = 0L)
+                    } else it
+                }
+            }
+        }
+        if (_queue.value.none { it.status == "Ready" }) return
+
         activeJob = viewModelScope.launch(Dispatchers.IO) {
             _isProcessing.value = true
             val context = getApplication<Application>()
 
             while (true) {
-                val nextItem = _queue.value.firstOrNull { it.status == "Queued" } ?: break
-                updateItem(nextItem.id) { it.copy(status = "Enhancing") }
+                val nextItem = _queue.value.firstOrNull { it.status == "Ready" } ?: break
+                updateItem(nextItem.id) {
+                    it.copy(status = "Enhancing", errorDetail = null, progress = 0f)
+                }
 
                 val tempInput = File(context.cacheDir, "in_${System.currentTimeMillis()}.mp4")
                 val tempOutput = File(context.cacheDir, "out_1080p_${System.currentTimeMillis()}.mp4")
@@ -98,7 +120,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         tempInput.outputStream().use { output -> input.copyTo(output) }
                     }
 
-                    val success = enhancer.enhanceVideo(
+                    val result = enhancer.enhanceVideo(
                         inputPath = tempInput.absolutePath,
                         outputPath = tempOutput.absolutePath,
                         preset = _selectedPreset.value,
@@ -113,17 +135,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
-                    if (success && tempOutput.exists()) {
+                    if (result.success && tempOutput.exists() && tempOutput.length() > 0L) {
                         val outMb = tempOutput.length() / (1024.0 * 1024.0)
                         saveToOutputFolder(tempOutput, "1080p_${nextItem.name}")
                         updateItem(nextItem.id) {
                             it.copy(status = "Done", progress = 1f, outputSizeMb = outMb)
                         }
+                    } else if (result.isCancelled) {
+                        updateItem(nextItem.id) { it.copy(status = "Cancelled") }
                     } else {
-                        updateItem(nextItem.id) { it.copy(status = "Cancelled / Failed") }
+                        updateItem(nextItem.id) {
+                            it.copy(status = "Failed", errorDetail = result.errorDetail)
+                        }
                     }
                 } catch (e: Exception) {
-                    updateItem(nextItem.id) { it.copy(status = "Error: ${e.message}") }
+                    updateItem(nextItem.id) {
+                        it.copy(status = "Failed", errorDetail = e.message)
+                    }
                 } finally {
                     tempInput.delete()
                     tempOutput.delete()
@@ -135,12 +163,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun saveToOutputFolder(sourceFile: File, fileName: String) {
         val context = getApplication<Application>()
-        val dirUri = _outputDirUri.value ?: return
-        val pickedDir = DocumentFile.fromTreeUri(context, dirUri) ?: return
-        val newFile = pickedDir.createFile("video/mp4", fileName) ?: return
-        context.contentResolver.openOutputStream(newFile.uri)?.use { outStream ->
-            sourceFile.inputStream().use { inStream -> inStream.copyTo(outStream) }
+        val dirUri = _outputDirUri.value
+        if (dirUri != null) {
+            val pickedDir = DocumentFile.fromTreeUri(context, dirUri)
+            val newFile = pickedDir?.createFile("video/mp4", fileName)
+            if (newFile != null) {
+                context.contentResolver.openOutputStream(newFile.uri)?.use { outStream ->
+                    sourceFile.inputStream().use { inStream -> inStream.copyTo(outStream) }
+                }
+                return
+            }
         }
+        // Fallback otomatis ke folder Movies/VideoEnhancer jika folder output belum dipilih
+        val moviesDir = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
+            "VideoEnhancer"
+        )
+        moviesDir.mkdirs()
+        sourceFile.copyTo(File(moviesDir, fileName), overwrite = true)
     }
 
     fun cancelAll() {
@@ -148,7 +188,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         activeJob?.cancel()
         _queue.update { list ->
             list.map {
-                if (it.status == "Queued" || it.status == "Enhancing") it.copy(status = "Cancelled") else it
+                if (it.status == "Ready" || it.status == "Enhancing") it.copy(status = "Cancelled") else it
             }
         }
         _isProcessing.value = false
