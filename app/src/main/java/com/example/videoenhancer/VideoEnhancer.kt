@@ -18,38 +18,58 @@ data class EnhanceResult(
     val errorDetail: String? = null
 )
 
+data class VideoProbeMetadata(
+    val durationMs: Long,
+    val isAv1: Boolean
+)
+
 class VideoEnhancer {
 
     private var currentSession: FFmpegSession? = null
     @Volatile
     private var userCancelled = false
     private var cachedEncoders: Set<String>? = null
+    private var cachedDecoders: Set<String>? = null
 
     private fun getAvailableEncoders(): Set<String> {
         cachedEncoders?.let { return it }
         val session = FFmpegKit.execute("-hide_banner -encoders")
         val output = session.allLogsAsString.orEmpty()
         val candidates = listOf(
-            "libx264", "libx265", "h264_mediacodec", "hevc_mediacodec",
-            "libopenh264", "libvpx-vp9", "mpeg4"
+            "libx264", "libx265", "h264_mediacodec", "hevc_mediacodec", "libopenh264"
         )
         val found = candidates.filter { output.contains(it) }.toSet()
         cachedEncoders = found
         return found
     }
 
-    fun getVideoDurationMs(
+    private fun getAvailableDecoders(): Set<String> {
+        cachedDecoders?.let { return it }
+        val session = FFmpegKit.execute("-hide_banner -decoders")
+        val output = session.allLogsAsString.orEmpty()
+        val candidates = listOf("libdav1d", "av1", "av1_mediacodec")
+        val found = candidates.filter { output.contains(it) }.toSet()
+        cachedDecoders = found
+        return found
+    }
+
+    fun probeVideoMetadata(
         context: Context,
         uri: Uri,
         freshInputPathProvider: () -> String
-    ): Long {
-        // 1. Baca durasi langsung via Android MediaMetadataRetriever tanpa menghabiskan SAF FD
+    ): VideoProbeMetadata {
+        var durationMs = 0L
+        var isAv1 = false
+
         val retriever = MediaMetadataRetriever()
         try {
             retriever.setDataSource(context, uri)
             val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-            val durationMs = durationStr?.toLongOrNull() ?: 0L
-            if (durationMs > 0L) return durationMs
+            durationMs = durationStr?.toLongOrNull() ?: 0L
+            val mime = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE).orEmpty()
+            if (mime.contains("av01", ignoreCase = true) || mime.contains("av1", ignoreCase = true)) {
+                isAv1 = true
+            }
         } catch (_: Exception) {
         } finally {
             try {
@@ -58,10 +78,19 @@ class VideoEnhancer {
             }
         }
 
-        // 2. Cadangan via FFprobe dengan SAF FD baru
-        val mediaInfoSession = FFprobeKit.getMediaInformation(freshInputPathProvider())
-        val durationSecStr = mediaInfoSession.mediaInformation?.duration ?: return 0L
-        return ((durationSecStr.toDoubleOrNull() ?: 0.0) * 1000).toLong()
+        if (durationMs <= 0L || !isAv1) {
+            val mediaInfoSession = FFprobeKit.getMediaInformation(freshInputPathProvider())
+            val info = mediaInfoSession.mediaInformation
+            if (durationMs <= 0L) {
+                durationMs = ((info?.duration?.toDoubleOrNull() ?: 0.0) * 1000).toLong()
+            }
+            val streams = info?.streams.orEmpty()
+            if (streams.any { it.codec?.contains("av1", ignoreCase = true) == true }) {
+                isAv1 = true
+            }
+        }
+
+        return VideoProbeMetadata(durationMs = durationMs, isAv1 = isAv1)
     }
 
     fun calculateTargetBitrateKbps(
@@ -84,43 +113,95 @@ class VideoEnhancer {
         }
     }
 
+    private fun buildDecoderArgs(isAv1: Boolean): List<List<String>> {
+        if (!isAv1) {
+            return listOf(
+                listOf("-thread_queue_size", "1024", "-threads", "8", "-flags2", "+fast")
+            )
+        }
+
+        val decoders = getAvailableDecoders()
+        val variants = mutableListOf<List<String>>()
+
+        // Prioritaskan libdav1d (decoder software AV1 multi-thread) sebelum -i
+        if ("libdav1d" in decoders) {
+            variants.add(
+                listOf(
+                    "-probesize", "50M",
+                    "-analyzeduration", "100M",
+                    "-thread_queue_size", "1024",
+                    "-c:v", "libdav1d",
+                    "-threads", "8"
+                )
+            )
+        }
+
+        // Cadangan decoder AV1 otomatis tanpa memaksa codec hardware yang tidak didukung chipset
+        variants.add(
+            listOf(
+                "-probesize", "50M",
+                "-analyzeduration", "100M",
+                "-thread_queue_size", "1024",
+                "-threads", "8"
+            )
+        )
+
+        return variants
+    }
+
     private fun buildEncoderChain(preset: EnhancementPreset): List<String> {
         val available = getAvailableEncoders()
         val ordered = mutableListOf<String>()
 
         if (preset.preferHardware) {
-            if ("h264_mediacodec" in available) ordered.add("h264_mediacodec")
+            if ("h264_mediacodec" in available) {
+                ordered.add("h264_mediacodec_ndk")
+                ordered.add("h264_mediacodec_auto")
+            }
             if ("libx264" in available) ordered.add("libx264")
             if ("libopenh264" in available) ordered.add("libopenh264")
-            ordered.add("mpeg4")
         } else if (preset.preferHevc) {
             if ("libx265" in available) ordered.add("libx265")
             if ("hevc_mediacodec" in available) ordered.add("hevc_mediacodec")
             if ("libx264" in available) ordered.add("libx264")
-            if ("h264_mediacodec" in available) ordered.add("h264_mediacodec")
-            if ("libopenh264" in available) ordered.add("libopenh264")
-            ordered.add("mpeg4")
+            if ("h264_mediacodec" in available) ordered.add("h264_mediacodec_ndk")
         } else {
             if ("libx264" in available) ordered.add("libx264")
-            if ("h264_mediacodec" in available) ordered.add("h264_mediacodec")
+            if ("h264_mediacodec" in available) {
+                ordered.add("h264_mediacodec_ndk")
+                ordered.add("h264_mediacodec_auto")
+            }
             if ("libopenh264" in available) ordered.add("libopenh264")
-            ordered.add("mpeg4")
         }
         return ordered.distinct()
     }
 
-    private fun buildEncoderArgs(encoder: String, targetKbps: Int): List<String> {
+    private fun buildEncoderArgs(encoderProfile: String, targetKbps: Int): List<String> {
         val bufsizeKbps = targetKbps * 2
-        return when (encoder) {
-            "h264_mediacodec", "hevc_mediacodec" -> listOf(
-                "-c:v", encoder,
+        return when (encoderProfile) {
+            "h264_mediacodec_ndk" -> listOf(
+                "-c:v", "h264_mediacodec",
+                "-ndk_codec", "1",
                 "-b:v", "${targetKbps}k",
+                "-g", "60",
+                "-pix_fmt", "yuv420p"
+            )
+            "h264_mediacodec_auto" -> listOf(
+                "-c:v", "h264_mediacodec",
+                "-b:v", "${targetKbps}k",
+                "-g", "60"
+            )
+            "hevc_mediacodec" -> listOf(
+                "-c:v", "hevc_mediacodec",
+                "-ndk_codec", "1",
+                "-b:v", "${targetKbps}k",
+                "-g", "60",
                 "-pix_fmt", "yuv420p"
             )
             "libx264" -> listOf(
                 "-c:v", "libx264",
                 "-preset", "superfast",
-                "-x264-params", "sliced-threads=0:ref=1:subme=1:me=dia:bframes=0:rc-lookahead=0:sync-lookahead=4",
+                "-x264-params", "sliced-threads=0:cabac=0:ref=1:subme=1:me=dia:bframes=0:rc-lookahead=0:sync-lookahead=4",
                 "-b:v", "${targetKbps}k",
                 "-maxrate", "${targetKbps}k",
                 "-bufsize", "${bufsizeKbps}k",
@@ -137,21 +218,10 @@ class VideoEnhancer {
                 "-threads", "8",
                 "-pix_fmt", "yuv420p"
             )
-            "libopenh264" -> listOf(
+            else -> listOf(
                 "-c:v", "libopenh264",
                 "-b:v", "${targetKbps}k",
                 "-maxrate", "${targetKbps}k",
-                "-pix_fmt", "yuv420p"
-            )
-            else -> listOf(
-                "-c:v", "mpeg4",
-                "-vtag", "mp4v",
-                "-b:v", "${targetKbps}k",
-                "-maxrate", "${targetKbps}k",
-                "-bufsize", "${bufsizeKbps}k",
-                "-mbd", "rd",
-                "-trellis", "1",
-                "-threads", "8",
                 "-pix_fmt", "yuv420p"
             )
         }
@@ -161,6 +231,7 @@ class VideoEnhancer {
         context: Context,
         uri: Uri,
         freshInputPathProvider: () -> String,
+        localFileFallbackProvider: () -> String,
         originalSizeBytes: Long,
         outputPath: String,
         preset: EnhancementPreset,
@@ -168,50 +239,55 @@ class VideoEnhancer {
         onProgress: (Float, Long) -> Unit
     ): EnhanceResult {
         userCancelled = false
-        val totalDurationMs = getVideoDurationMs(context, uri, freshInputPathProvider)
+        val metadata = probeVideoMetadata(context, uri, freshInputPathProvider)
         val targetKbps = calculateTargetBitrateKbps(
             fileSizeBytes = originalSizeBytes,
-            durationMs = totalDurationMs,
+            durationMs = metadata.durationMs,
             preset = preset,
             strictSizeLock = strictSizeLock
         )
 
+        val decoderVariants = buildDecoderArgs(metadata.isAv1)
         val encoderChain = buildEncoderChain(preset)
-        var lastResult = EnhanceResult(success = false, errorDetail = "No compatible encoder found")
+        var lastResult = EnhanceResult(success = false, errorDetail = "No compatible decoder/encoder")
 
-        for (encoder in encoderChain) {
+        // Coba lewat SAF terlebih dahulu; jika AV1 gagal seek pada SAF, lanjutkan lewat file lokal cache
+        val inputSources = listOf(freshInputPathProvider, localFileFallbackProvider)
+
+        for (sourceProvider in inputSources) {
             if (userCancelled) break
-            File(outputPath).delete()
+            for (decoderArgs in decoderVariants) {
+                if (userCancelled) break
+                for (encoderProfile in encoderChain) {
+                    if (userCancelled) break
+                    File(outputPath).delete()
 
-            // Selalu ambil SAF FD baru yang masih segar dari awal file (byte 0)
-            val freshInputPath = freshInputPathProvider()
+                    val inputPath = sourceProvider()
+                    val args = buildList {
+                        add("-y")
+                        addAll(decoderArgs)
+                        add("-i")
+                        add(inputPath)
+                        add("-vf")
+                        add(preset.videoFilter)
+                        addAll(buildEncoderArgs(encoderProfile, targetKbps))
+                        add("-c:a")
+                        add("copy")
+                        add("-movflags")
+                        add("+faststart")
+                        add(outputPath)
+                    }
 
-            val args = buildList {
-                add("-y")
-                add("-thread_queue_size")
-                add("1024")
-                add("-threads")
-                add("8")
-                add("-i")
-                add(freshInputPath)
-                add("-vf")
-                add(preset.videoFilter)
-                addAll(buildEncoderArgs(encoder, targetKbps))
-                add("-c:a")
-                add("copy")
-                add("-movflags")
-                add("+faststart")
-                add(outputPath)
-            }
+                    lastResult = executeFfmpeg(
+                        args = args,
+                        totalDurationMs = metadata.durationMs,
+                        onProgress = onProgress
+                    )
 
-            lastResult = executeFfmpeg(
-                args = args,
-                totalDurationMs = totalDurationMs,
-                onProgress = onProgress
-            )
-
-            if (lastResult.success || lastResult.isCancelled) {
-                return lastResult
+                    if (lastResult.success || lastResult.isCancelled) {
+                        return lastResult
+                    }
+                }
             }
         }
 

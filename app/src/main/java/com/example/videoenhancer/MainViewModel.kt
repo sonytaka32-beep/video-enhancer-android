@@ -128,31 +128,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 val tempOutput = File(context.cacheDir, "out_1080p_${System.currentTimeMillis()}.mp4")
-                var tempInputFallback: File? = null
+                var tempInputCache: File? = null
 
                 try {
-                    val freshPathProvider: () -> String = {
-                        val safParam = FFmpegKitConfig.getSafParameterForRead(context, nextItem.uri)
-                        if (!safParam.isNullOrBlank()) {
-                            safParam
-                        } else {
-                            val fallback = tempInputFallback ?: File(
-                                context.cacheDir,
-                                "in_${System.currentTimeMillis()}.mp4"
-                            ).also { file ->
-                                tempInputFallback = file
-                                context.contentResolver.openInputStream(nextItem.uri)?.use { input ->
-                                    file.outputStream().use { output -> input.copyTo(output) }
-                                }
+                    val localFileProvider: () -> String = {
+                        val cached = tempInputCache ?: File(
+                            context.cacheDir,
+                            "in_${System.currentTimeMillis()}.mp4"
+                        ).also { file ->
+                            tempInputCache = file
+                            context.contentResolver.openInputStream(nextItem.uri)?.use { input ->
+                                file.outputStream().use { output -> input.copyTo(output) }
                             }
-                            fallback.absolutePath
                         }
+                        cached.absolutePath
+                    }
+
+                    val freshSafProvider: () -> String = {
+                        val safParam = FFmpegKitConfig.getSafParameterForRead(context, nextItem.uri)
+                        if (!safParam.isNullOrBlank()) safParam else localFileProvider()
                     }
 
                     val result = enhancer.enhanceVideo(
                         context = context,
                         uri = nextItem.uri,
-                        freshInputPathProvider = freshPathProvider,
+                        freshInputPathProvider = freshSafProvider,
+                        localFileFallbackProvider = localFileProvider,
                         originalSizeBytes = nextItem.originalSizeBytes,
                         outputPath = tempOutput.absolutePath,
                         preset = _selectedPreset.value,
@@ -185,7 +186,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(status = "Failed", errorDetail = e.message)
                     }
                 } finally {
-                    tempInputFallback?.delete()
+                    tempInputCache?.delete()
                     tempOutput.delete()
                 }
             }

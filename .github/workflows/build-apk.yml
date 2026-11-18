@@ -19,9 +19,9 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Configure Repositories & FFmpeg-Kit Mirror
+      - name: Configure Full-GPL FFmpeg-Kit (AV1 libdav1d + libx264 + libx265)
         run: |
-          # 1. Hapus file .gradle lama jika versi .gradle.kts sudah ada agar tidak bentrok
+          # 1. Hapus file .gradle lama jika versi .gradle.kts sudah ada
           [ -f settings.gradle ] && [ -f settings.gradle.kts ] && rm -f settings.gradle
           [ -f build.gradle ] && [ -f build.gradle.kts ] && rm -f build.gradle
           [ -f app/build.gradle ] && [ -f app/build.gradle.kts ] && rm -f app/build.gradle
@@ -30,17 +30,65 @@ jobs:
           find . -maxdepth 2 \( -name "settings.gradle" -o -name "settings.gradle.kts" \) -exec \
             sed -i '/jitpack\.io/d' {} +
 
-          # 3. Tambahkan mirror Google Maven Central sebelum mavenCentral() untuk mencegah rate-limit
+          # 3. Tambahkan mirror Google Maven Central untuk mencegah rate-limit
           if [ -f settings.gradle.kts ] && ! grep -q "storage-download.googleapis.com" settings.gradle.kts; then
             sed -i 's|mavenCentral()|maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }\n        mavenCentral()|g' settings.gradle.kts
           elif [ -f settings.gradle ] && ! grep -q "storage-download.googleapis.com" settings.gradle; then
             sed -i "s|mavenCentral()|maven { url 'https://maven-central.storage-download.googleapis.com/maven2/' }\n        mavenCentral()|g" settings.gradle
           fi
 
-          # 4. Pastikan dependency ffmpeg-kit memakai mirror Maven Central yang aktif
-          FFMPEG_DEP="com.moizhassan.ffmpeg:ffmpeg-kit-16kb:6.0.0"
-          find . -maxdepth 3 \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec \
-            sed -i -E "s#(com\.github\.arthenica|com\.arthenica):ffmpeg-kit-[^\"']+#${FFMPEG_DEP}#g" {} +
+          # 4. Verifikasi mirror Maven Central Full-GPL (HTTP 200)
+          FULL_GPL_COORD=""
+          for CANDIDATE in \
+            "com.antonkarpenko:ffmpeg-kit-full-gpl:1.1.0|https://repo1.maven.org/maven2/com/antonkarpenko/ffmpeg-kit-full-gpl/1.1.0/ffmpeg-kit-full-gpl-1.1.0.aar" \
+            "io.github.shenzhen2017:ffmpeg-kit-full-gpl:5.1.LTS|https://repo1.maven.org/maven2/io/github/shenzhen2017/ffmpeg-kit-full-gpl/5.1.LTS/ffmpeg-kit-full-gpl-5.1.LTS.aar"
+          do
+            COORD="${CANDIDATE%%|*}"
+            URL="${CANDIDATE##*|}"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -L "$URL")
+            if [ "$STATUS" = "200" ]; then
+              FULL_GPL_COORD="$COORD"
+              echo "Menggunakan Maven Central Full-GPL: $FULL_GPL_COORD"
+              break
+            fi
+          done
+
+          if [ -n "$FULL_GPL_COORD" ]; then
+            python3 -c '
+          import glob, re, sys
+          coord = sys.argv[1]
+          for path in glob.glob("**/build.gradle*", recursive=True):
+              with open(path, "r") as f:
+                  txt = f.read()
+              new_txt = re.sub(r"[\"'\''][^\"'\'']*ffmpeg-kit-[^\"'\'']*[\"'\'']", f"\"{coord}\"", txt)
+              with open(path, "w") as f:
+                  f.write(new_txt)
+          ' "$FULL_GPL_COORD"
+          else
+            # 5. Cadangan: Unduh AAR resmi Full-GPL dan validasi struktur ZIP/AAR
+            mkdir -p app/libs
+            for AAR_URL in \
+              "https://github.com/arthenica/ffmpeg-kit/releases/download/v6.0-2.LTS/ffmpeg-kit-full-gpl-6.0-2.LTS.aar" \
+              "https://github.com/arthenica/ffmpeg-kit/releases/download/v5.1.LTS/ffmpeg-kit-full-gpl-5.1.LTS.aar"
+            do
+              if curl -fL --retry 3 "$AAR_URL" -o app/libs/ffmpeg-kit-full-gpl.aar && unzip -tq app/libs/ffmpeg-kit-full-gpl.aar >/dev/null 2>&1; then
+                echo "AAR Full-GPL terverifikasi dari: $AAR_URL"
+                break
+              fi
+              rm -f app/libs/ffmpeg-kit-full-gpl.aar
+            done
+
+            if [ -f app/build.gradle.kts ]; then
+              python3 -c '
+          import re
+          with open("app/build.gradle.kts", "r") as f:
+              txt = f.read()
+          txt = re.sub(r"implementation\([^\)]*ffmpeg-kit[^\)]*\)", "implementation(files(\"libs/ffmpeg-kit-full-gpl.aar\"))\n    implementation(\"com.arthenica:smart-exception-java:0.2.1\")", txt)
+          with open("app/build.gradle.kts", "w") as f:
+              f.write(txt)
+          '
+            fi
+          fi
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
