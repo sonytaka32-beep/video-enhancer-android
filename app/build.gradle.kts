@@ -55,6 +55,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.documentfile:documentfile:1.0.1")
 
-    // FFmpeg-Kit 5.1 from Maven Central (no auth required)
-    implementation("com.arthenica:ffmpeg-kit-full:5.1")
+    // Mirror Maven Central resmi (mendukung libx264, libx265, libdav1d, h264_mediacodec)
+    implementation("com.moizhassan.ffmpeg:ffmpeg-kit-16kb:6.0.0")
 }

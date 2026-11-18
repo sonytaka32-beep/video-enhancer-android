@@ -19,23 +19,39 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Fix Gradle & FFmpeg-Kit Repository
+      - name: Configure Verified Maven Central FFmpeg-Kit
         run: |
           # 1. Hapus file .gradle lama jika versi .gradle.kts sudah ada agar tidak bentrok
           [ -f settings.gradle ] && [ -f settings.gradle.kts ] && rm -f settings.gradle
           [ -f build.gradle ] && [ -f build.gradle.kts ] && rm -f build.gradle
           [ -f app/build.gradle ] && [ -f app/build.gradle.kts ] && rm -f app/build.gradle
 
-          # 2. Pastikan JitPack terdaftar di settings.gradle(.kts)
-          if [ -f settings.gradle.kts ] && ! grep -q "jitpack.io" settings.gradle.kts; then
-            sed -i 's|mavenCentral()|mavenCentral()\n        maven { url = uri("https://jitpack.io") }|g' settings.gradle.kts
-          elif [ -f settings.gradle ] && ! grep -q "jitpack.io" settings.gradle; then
-            sed -i "s|mavenCentral()|mavenCentral()\n        maven { url 'https://jitpack.io' }|g" settings.gradle
-          fi
+          # 2. Hapus JitPack dari settings.gradle(.kts) agar tidak memicu error 401
+          find . -maxdepth 2 \( -name "settings.gradle" -o -name "settings.gradle.kts" \) -exec \
+            sed -i '/jitpack\.io/d' {} +
 
-          # 3. Ganti koordinat lama com.arthenica:ffmpeg-kit-full:5.1 di semua file Gradle
-          find . -maxdepth 3 \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec \
-            sed -i 's|com.arthenica:ffmpeg-kit-full:5.1|com.github.arthenica:ffmpeg-kit-full-gpl:v5.1.LTS|g' {} +
+          # 3. Pilih mirror ffmpeg-kit di Maven Central yang aktif (HTTP 200)
+          FFMPEG_DEP=""
+          for CANDIDATE in \
+            "com.moizhassan.ffmpeg:ffmpeg-kit-16kb:6.0.0|https://repo1.maven.org/maven2/com/moizhassan/ffmpeg/ffmpeg-kit-16kb/6.0.0/ffmpeg-kit-16kb-6.0.0.aar" \
+            "com.antonkarpenko:ffmpeg-kit-full-gpl:1.1.0|https://repo1.maven.org/maven2/com/antonkarpenko/ffmpeg-kit-full-gpl/1.1.0/ffmpeg-kit-full-gpl-1.1.0.aar" \
+            "io.github.shenzhen2017:ffmpeg-kit-full-gpl:5.1.LTS|https://repo1.maven.org/maven2/io/github/shenzhen2017/ffmpeg-kit-full-gpl/5.1.LTS/ffmpeg-kit-full-gpl-5.1.LTS.aar"
+          do
+            COORD="${CANDIDATE%%|*}"
+            URL="${CANDIDATE##*|}"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -L "$URL")
+            if [ "$STATUS" = "200" ]; then
+              FFMPEG_DEP="$COORD"
+              echo "Menggunakan FFmpeg-Kit Maven Central: $FFMPEG_DEP"
+              break
+            fi
+          done
+
+          # 4. Ganti koordinat lama dengan dependency Maven Central yang terverifikasi
+          if [ -n "$FFMPEG_DEP" ]; then
+            find . -maxdepth 3 \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec \
+              sed -i -E "s|(com\.github\.arthenica:ffmpeg-kit-full-gpl:v5\.1\.LTS|com\.arthenica:ffmpeg-kit-full:5\.1)|$FFMPEG_DEP|g" {} +
+          fi
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
