@@ -1,5 +1,8 @@
 package com.example.videoenhancer
 
+import android.content.Context
+import android.media.MediaMetadataRetriever
+import android.net.Uri
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegSession
 import com.arthenica.ffmpegkit.FFprobeKit
@@ -35,10 +38,30 @@ class VideoEnhancer {
         return found
     }
 
-    fun getVideoDurationMs(inputPath: String): Long {
-        val mediaInfoSession = FFprobeKit.getMediaInformation(inputPath)
-        val durationStr = mediaInfoSession.mediaInformation?.duration ?: return 0L
-        return ((durationStr.toDoubleOrNull() ?: 0.0) * 1000).toLong()
+    fun getVideoDurationMs(
+        context: Context,
+        uri: Uri,
+        freshInputPathProvider: () -> String
+    ): Long {
+        // 1. Baca durasi langsung via Android MediaMetadataRetriever tanpa menghabiskan SAF FD
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(context, uri)
+            val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            val durationMs = durationStr?.toLongOrNull() ?: 0L
+            if (durationMs > 0L) return durationMs
+        } catch (_: Exception) {
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {
+            }
+        }
+
+        // 2. Cadangan via FFprobe dengan SAF FD baru
+        val mediaInfoSession = FFprobeKit.getMediaInformation(freshInputPathProvider())
+        val durationSecStr = mediaInfoSession.mediaInformation?.duration ?: return 0L
+        return ((durationSecStr.toDoubleOrNull() ?: 0.0) * 1000).toLong()
     }
 
     fun calculateTargetBitrateKbps(
@@ -121,7 +144,6 @@ class VideoEnhancer {
                 "-pix_fmt", "yuv420p"
             )
             else -> listOf(
-                // Universal MPEG-4 Part 2 (kompatibel 100% di semua player Android & FFmpeg LGPL)
                 "-c:v", "mpeg4",
                 "-vtag", "mp4v",
                 "-b:v", "${targetKbps}k",
@@ -136,7 +158,9 @@ class VideoEnhancer {
     }
 
     suspend fun enhanceVideo(
-        inputPath: String,
+        context: Context,
+        uri: Uri,
+        freshInputPathProvider: () -> String,
         originalSizeBytes: Long,
         outputPath: String,
         preset: EnhancementPreset,
@@ -144,7 +168,7 @@ class VideoEnhancer {
         onProgress: (Float, Long) -> Unit
     ): EnhanceResult {
         userCancelled = false
-        val totalDurationMs = getVideoDurationMs(inputPath)
+        val totalDurationMs = getVideoDurationMs(context, uri, freshInputPathProvider)
         val targetKbps = calculateTargetBitrateKbps(
             fileSizeBytes = originalSizeBytes,
             durationMs = totalDurationMs,
@@ -159,6 +183,9 @@ class VideoEnhancer {
             if (userCancelled) break
             File(outputPath).delete()
 
+            // Selalu ambil SAF FD baru yang masih segar dari awal file (byte 0)
+            val freshInputPath = freshInputPathProvider()
+
             val args = buildList {
                 add("-y")
                 add("-thread_queue_size")
@@ -166,7 +193,7 @@ class VideoEnhancer {
                 add("-threads")
                 add("8")
                 add("-i")
-                add(inputPath)
+                add(freshInputPath)
                 add("-vf")
                 add(preset.videoFilter)
                 addAll(buildEncoderArgs(encoder, targetKbps))
@@ -221,7 +248,7 @@ class VideoEnhancer {
                     )
                 }
             },
-            { /* Log otomatis terkumpul di session.allLogsAsString */ },
+            { },
             { statistics ->
                 if (totalDurationMs > 0 && statistics.time > 0) {
                     val progress = (statistics.time.toFloat() / totalDurationMs.toFloat()).coerceIn(0f, 1f)

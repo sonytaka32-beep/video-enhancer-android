@@ -1,6 +1,7 @@
 package com.example.videoenhancer
 
 import android.app.Application
+import android.content.Intent
 import android.net.Uri
 import android.os.Environment
 import android.provider.OpenableColumns
@@ -58,12 +59,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setOutputDirectory(uri: Uri) {
+        try {
+            getApplication<Application>().contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        } catch (_: Exception) {
+        }
         _outputDirUri.value = uri
     }
 
     fun addVideos(uris: List<Uri>) {
         val resolver = getApplication<Application>().contentResolver
         val newItems = uris.map { uri ->
+            try {
+                resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: Exception) {
+            }
+
             var name = "video_${System.currentTimeMillis()}.mp4"
             var sizeBytes = 0L
             resolver.query(uri, null, null, null, null)?.use { cursor ->
@@ -118,21 +131,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 var tempInputFallback: File? = null
 
                 try {
-                    // Baca langsung lewat SAF FD tanpa menyalin 362MB ke cache
-                    val safInputPath = FFmpegKitConfig.getSafParameterForRead(context, nextItem.uri)
-                    val resolvedInputPath = if (!safInputPath.isNullOrBlank()) {
-                        safInputPath
-                    } else {
-                        File(context.cacheDir, "in_${System.currentTimeMillis()}.mp4").also { file ->
-                            tempInputFallback = file
-                            context.contentResolver.openInputStream(nextItem.uri)?.use { input ->
-                                file.outputStream().use { output -> input.copyTo(output) }
+                    val freshPathProvider: () -> String = {
+                        val safParam = FFmpegKitConfig.getSafParameterForRead(context, nextItem.uri)
+                        if (!safParam.isNullOrBlank()) {
+                            safParam
+                        } else {
+                            val fallback = tempInputFallback ?: File(
+                                context.cacheDir,
+                                "in_${System.currentTimeMillis()}.mp4"
+                            ).also { file ->
+                                tempInputFallback = file
+                                context.contentResolver.openInputStream(nextItem.uri)?.use { input ->
+                                    file.outputStream().use { output -> input.copyTo(output) }
+                                }
                             }
-                        }.absolutePath
+                            fallback.absolutePath
+                        }
                     }
 
                     val result = enhancer.enhanceVideo(
-                        inputPath = resolvedInputPath,
+                        context = context,
+                        uri = nextItem.uri,
+                        freshInputPathProvider = freshPathProvider,
                         originalSizeBytes = nextItem.originalSizeBytes,
                         outputPath = tempOutput.absolutePath,
                         preset = _selectedPreset.value,
