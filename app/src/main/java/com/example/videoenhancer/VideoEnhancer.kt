@@ -3,10 +3,10 @@ package com.example.videoenhancer
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
-import com.arthenica.ffmpegkit.FFmpegKit
-import com.arthenica.ffmpegkit.FFmpegSession
-import com.arthenica.ffmpegkit.FFprobeKit
-import com.arthenica.ffmpegkit.ReturnCode
+import com.antonkarpenko.ffmpegkit.FFmpegKit
+import com.antonkarpenko.ffmpegkit.FFmpegSession
+import com.antonkarpenko.ffmpegkit.FFprobeKit
+import com.antonkarpenko.ffmpegkit.ReturnCode
 import java.io.File
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
@@ -84,9 +84,17 @@ class VideoEnhancer {
             if (durationMs <= 0L) {
                 durationMs = ((info?.duration?.toDoubleOrNull() ?: 0.0) * 1000).toLong()
             }
-            val streams = info?.streams.orEmpty()
-            if (streams.any { it.codec?.contains("av1", ignoreCase = true) == true }) {
-                isAv1 = true
+            val streams = info?.streams
+            if (streams != null) {
+                for (stream in streams) {
+                    val codecName = stream.codec.orEmpty()
+                    if (codecName.contains("av1", ignoreCase = true) ||
+                        codecName.contains("av01", ignoreCase = true)
+                    ) {
+                        isAv1 = true
+                        break
+                    }
+                }
             }
         }
 
@@ -123,7 +131,6 @@ class VideoEnhancer {
         val decoders = getAvailableDecoders()
         val variants = mutableListOf<List<String>>()
 
-        // Prioritaskan libdav1d (decoder software AV1 multi-thread) sebelum -i
         if ("libdav1d" in decoders) {
             variants.add(
                 listOf(
@@ -136,7 +143,6 @@ class VideoEnhancer {
             )
         }
 
-        // Cadangan decoder AV1 otomatis tanpa memaksa codec hardware yang tidak didukung chipset
         variants.add(
             listOf(
                 "-probesize", "50M",
@@ -251,7 +257,6 @@ class VideoEnhancer {
         val encoderChain = buildEncoderChain(preset)
         var lastResult = EnhanceResult(success = false, errorDetail = "No compatible decoder/encoder")
 
-        // Coba lewat SAF terlebih dahulu; jika AV1 gagal seek pada SAF, lanjutkan lewat file lokal cache
         val inputSources = listOf(freshInputPathProvider, localFileFallbackProvider)
 
         for (sourceProvider in inputSources) {

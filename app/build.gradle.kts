@@ -55,6 +55,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.documentfile:documentfile:1.0.1")
 
-    // Mirror Maven Central resmi (mendukung libx264, libx265, libdav1d, h264_mediacodec)
-    implementation("com.moizhassan.ffmpeg:ffmpeg-kit-16kb:6.0.0")
+    // Full-GPL FFmpeg-Kit (memuat libdav1d untuk AV1 + libx264 + libx265)
+    implementation("com.antonkarpenko:ffmpeg-kit-full-gpl:1.1.0")
 }
