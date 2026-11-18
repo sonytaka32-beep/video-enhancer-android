@@ -55,6 +55,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.documentfile:documentfile:1.0.1")
 
-    // FFmpeg-Kit v5.1.LTS via JitPack (Stabil & Anti-401)
-    implementation("com.github.arthenica:ffmpeg-kit-full-gpl:v5.1.LTS")
+    // FFmpeg-Kit 5.1 from Maven Central (no auth required)
+    implementation("com.arthenica:ffmpeg-kit-full:5.1")
 }
